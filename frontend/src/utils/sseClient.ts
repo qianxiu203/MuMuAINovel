@@ -18,8 +18,7 @@ export interface SSEClientOptions {
   onError?: (error: string, code?: number) => void;
   onComplete?: () => void;
   onConnectionError?: (error: Event) => void;
-  onCharacterConfirmation?: (data: any) => void;  // 新增：角色确认回调
-  onOrganizationConfirmation?: (data: any) => void; // 新增：组织确认回调
+  signal?: AbortSignal;
 }
 
 export class SSEClient {
@@ -129,6 +128,7 @@ export class SSEPostClient {
   private data: any;
   private options: SSEClientOptions;
   private abortController: AbortController | null = null;
+  private externalAbortHandler: (() => void) | null = null;
   private accumulatedContent: string = '';
   private resultData: any = null;
 
@@ -146,13 +146,23 @@ export class SSEPostClient {
 
   private async connectInternal(resolve: (value: any) => void, reject: (reason?: any) => void) {
       try {
+        if (this.options.signal?.aborted) {
+          throw new DOMException('请求已取消', 'AbortError');
+        }
+
         this.abortController = new AbortController();
+
+        if (this.options.signal) {
+          this.externalAbortHandler = () => this.abortController?.abort();
+          this.options.signal.addEventListener('abort', this.externalAbortHandler, { once: true });
+        }
 
         const response = await fetch(this.url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
+          credentials: 'include',
           body: JSON.stringify(this.data),
           signal: this.abortController.signal,
         });
@@ -169,8 +179,6 @@ export class SSEPostClient {
         }
 
         let buffer = '';
-        let currentEvent = '';  // 跟踪当前事件类型
-
         while (true) {
           const { done, value } = await reader.read();
 
@@ -189,38 +197,14 @@ export class SSEPostClient {
             }
 
             try {
-              // 检查是否有事件类型
-              const eventMatch = line.match(/^event: (.+)$/m);
-              if (eventMatch) {
-                currentEvent = eventMatch[1];
-              }
-
               // 解析数据
               const dataMatch = line.match(/^data: (.+)$/m);
               if (dataMatch) {
                 const data = JSON.parse(dataMatch[1]);
 
-                // 根据事件类型处理
-                if (currentEvent === 'character_confirmation_required') {
-                  // 处理角色确认事件
-                  if (this.options.onCharacterConfirmation) {
-                    this.options.onCharacterConfirmation(data);
-                  }
-                  currentEvent = '';  // 重置事件类型
-                  return;  // 暂停流程，等待用户确认
-                } else if (currentEvent === 'organization_confirmation_required') {
-                  // 处理组织确认事件
-                  if (this.options.onOrganizationConfirmation) {
-                    this.options.onOrganizationConfirmation(data);
-                  }
-                  currentEvent = '';  // 重置事件类型
-                  return;  // 暂停流程，等待用户确认
-                } else {
-                  // 标准消息处理
-                  const message: SSEMessage = data;
-                  await this.handleMessage(message, resolve, reject);
-                  currentEvent = '';  // 重置事件类型
-                }
+                // 标准消息处理
+                const message: SSEMessage = data;
+                await this.handleMessage(message, resolve, reject);
               }
             } catch (error) {
               console.error('解析SSE消息失败:', error, line);
@@ -231,12 +215,18 @@ export class SSEPostClient {
       } catch (error: any) {
         if (error.name === 'AbortError') {
           console.log('请求已取消');
+          reject(error);
         } else {
           console.error('SSE POST请求失败:', error);
           if (this.options.onError) {
             this.options.onError(error.message || '请求失败');
           }
           reject(error);
+        }
+      } finally {
+        if (this.options.signal && this.externalAbortHandler) {
+          this.options.signal.removeEventListener('abort', this.externalAbortHandler);
+          this.externalAbortHandler = null;
         }
       }
   }

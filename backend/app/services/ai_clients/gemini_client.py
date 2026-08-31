@@ -24,15 +24,36 @@ class GeminiClient:
             )
         )
 
+    @classmethod
+    def _convert_schema_to_gemini(cls, schema: dict) -> dict:
+        converted = {}
+        for key, value in schema.items():
+            if key in {"$schema", "additionalProperties"}:
+                continue
+            if key == "type" and isinstance(value, list):
+                non_null = [item for item in value if item != "null"]
+                converted["type"] = non_null[0] if non_null else "string"
+                if "null" in value:
+                    converted["nullable"] = True
+                continue
+            if isinstance(value, dict):
+                converted[key] = cls._convert_schema_to_gemini(value)
+            elif isinstance(value, list):
+                converted[key] = [
+                    cls._convert_schema_to_gemini(item) if isinstance(item, dict) else item
+                    for item in value
+                ]
+            else:
+                converted[key] = value
+        return converted
+
     def _convert_tools_to_gemini(self, tools: list) -> list:
         """将 OpenAI 格式工具转换为 Gemini 格式"""
         gemini_tools = []
         for tool in tools:
             if tool.get("type") == "function":
                 func = tool["function"]
-                params = func.get("parameters", {}).copy() if func.get("parameters") else {}
-                params.pop("$schema", None)
-                params.pop("additionalProperties", None)
+                params = self._convert_schema_to_gemini(func.get("parameters", {})) if func.get("parameters") else {}
                 if params and "type" not in params:
                     params["type"] = "object"
                 decl = {
@@ -98,10 +119,19 @@ class GeminiClient:
                     "function": {"name": fc["name"], "arguments": fc.get("args", {})}
                 })
         
+        usage = data.get("usageMetadata") or {}
+        prompt_tokens = usage.get("promptTokenCount")
+        completion_tokens = usage.get("candidatesTokenCount")
+        total_tokens = usage.get("totalTokenCount")
         return {
             "content": text,
             "tool_calls": tool_calls if tool_calls else None,
-            "finish_reason": "tool_calls" if tool_calls else "stop"
+            "finish_reason": "tool_calls" if tool_calls else "stop",
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+            }
         }
 
     async def chat_completion_stream(
@@ -148,6 +178,15 @@ class GeminiClient:
                             import json
                             try:
                                 data = json.loads(line[6:])
+                                usage = data.get("usageMetadata") or {}
+                                if usage:
+                                    yield {
+                                        "usage": {
+                                            "prompt_tokens": usage.get("promptTokenCount"),
+                                            "completion_tokens": usage.get("candidatesTokenCount"),
+                                            "total_tokens": usage.get("totalTokenCount"),
+                                        }
+                                    }
                                 candidates = data.get("candidates", [])
                                 if candidates and len(candidates) > 0:
                                     parts = candidates[0].get("content", {}).get("parts", [])

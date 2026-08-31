@@ -12,6 +12,9 @@ import type {
   Outline,
   OutlineCreate,
   OutlineUpdate,
+  OutlineImportMode,
+  OutlineImportPreview,
+  OutlineImportResult,
   OutlineReorderRequest,
   OutlineExpansionRequest,
   OutlineExpansionResponse,
@@ -34,6 +37,15 @@ import type {
   WritingStyleUpdate,
   PresetStyle,
   WritingStyleListResponse,
+  PromptWorkshopListResponse,
+  PromptWorkshopItem,
+  PromptSubmission,
+  PromptSubmissionCreate,
+  Announcement,
+  AnnouncementCreate,
+  AnnouncementListResponse,
+  AnnouncementStatusResponse,
+  AnnouncementUpdate,
   MCPPlugin,
   MCPPluginCreate,
   MCPPluginUpdate,
@@ -46,6 +58,20 @@ import type {
   PresetUpdateRequest,
   PresetListResponse,
   ChapterPlanItem,
+  BookImportTask,
+  BookImportPreview,
+  BookImportApplyPayload,
+  BookImportCreateTaskPayload,
+  BookImportResult,
+  BookImportRetryResult,
+  BatchAnalysisStatusResponse,
+  BatchAnalyzeUnanalyzedRequest,
+  BatchAnalyzeUnanalyzedResponse,
+  AgentConversation,
+  AgentConversationDetail,
+  AgentToolCall,
+  AgentToolDecision,
+  AgentExecutionStep,
 } from '../types';
 
 interface MCPPluginSimpleCreate {
@@ -86,14 +112,25 @@ api.interceptors.response.use(
         case 400:
           errorMessage = data?.detail || '请求参数错误';
           break;
-        case 401:
-          errorMessage = '未授权，请先登录';
-          if (window.location.pathname !== '/login') {
+        case 401: {
+          const backendDetail = data?.detail || data?.message;
+          const unauthenticatedDetails = [
+            '未登录',
+            '需要登录',
+            '未登录或用户ID缺失',
+            '未登录，无法刷新会话',
+          ];
+          const isUnauthenticated = unauthenticatedDetails.includes(backendDetail);
+
+          errorMessage = backendDetail || '登录状态已失效，请重新登录';
+
+          if (isUnauthenticated && window.location.pathname !== '/login') {
             window.location.href = '/login';
           }
           break;
+        }
         case 403:
-          errorMessage = '没有权限访问';
+          errorMessage = data?.detail || '没有权限访问';
           break;
         case 404:
           errorMessage = data?.detail || '请求的资源不存在';
@@ -127,13 +164,30 @@ api.interceptors.response.use(
 );
 
 export const authApi = {
-  getAuthConfig: () => api.get<unknown, { local_auth_enabled: boolean; linuxdo_enabled: boolean }>('/auth/config'),
+  getAuthConfig: () => api.get<unknown, {
+    local_auth_enabled: boolean;
+    linuxdo_enabled: boolean;
+    email_auth_enabled: boolean;
+    email_register_enabled: boolean;
+  }>('/auth/config'),
 
   localLogin: (username: string, password: string) =>
     api.post<unknown, { success: boolean; message: string; user: User }>('/auth/local/login', { username, password }),
 
   bindAccountLogin: (username: string, password: string) =>
     api.post<unknown, { success: boolean; message: string; user: User }>('/auth/bind/login', { username, password }),
+
+  emailLogin: (payload: import('../types').EmailLoginPayload) =>
+    api.post<unknown, { success: boolean; message: string; user: User }>('/auth/email/login', payload),
+
+  sendEmailCode: (payload: import('../types').EmailSendCodePayload) =>
+    api.post<unknown, { success: boolean; message: string; expire_in_seconds: number; resend_interval_seconds: number }>('/auth/email/send-code', payload),
+
+  emailRegister: (payload: import('../types').EmailRegisterPayload) =>
+    api.post<unknown, { success: boolean; message: string; user: User }>('/auth/email/register', payload),
+
+  resetEmailPassword: (payload: import('../types').EmailResetPasswordPayload) =>
+    api.post<unknown, { success: boolean; message: string }>('/auth/email/reset-password', payload),
 
   getLinuxDOAuthUrl: () => api.get<unknown, AuthUrlResponse>('/auth/linuxdo/url'),
 
@@ -189,10 +243,10 @@ export const settingsApi = {
 
   deleteSettings: () => api.delete<unknown, { message: string; user_id: string }>('/settings'),
 
-  getAvailableModels: (params: { api_key: string; api_base_url: string; provider: string }) =>
+  getAvailableModels: (params: { api_key?: string; api_base_url?: string; provider: string }) =>
     api.get<unknown, { provider: string; models: Array<{ value: string; label: string; description: string }>; count?: number }>('/settings/models', { params }),
 
-  testApiConnection: (params: { api_key: string; api_base_url: string; provider: string; llm_model: string; temperature?: number; max_tokens?: number }) =>
+  testApiConnection: (params: { api_key?: string; api_base_url?: string; provider: string; llm_model: string; temperature?: number; max_tokens?: number }) =>
     api.post<unknown, {
       success: boolean;
       message: string;
@@ -206,7 +260,15 @@ export const settingsApi = {
       suggestions?: string[];
     }>('/settings/test', params),
 
-  checkFunctionCalling: (params: { api_key: string; api_base_url: string; provider: string; llm_model: string }) =>
+  testCoverConnection: (params: { cover_api_provider: string; cover_api_key: string; cover_api_base_url?: string; cover_image_model: string }) =>
+    api.post<unknown, {
+      success: boolean;
+      message: string;
+      provider?: string;
+      model?: string;
+    }>('/settings/cover/test', params),
+
+  checkFunctionCalling: (params: { api_key?: string; api_base_url?: string; provider: string; llm_model: string }) =>
     api.post<unknown, {
       success: boolean;
       supported: boolean;
@@ -266,10 +328,24 @@ export const settingsApi = {
       suggestions?: string[];
     }>(`/settings/presets/${presetId}/test`),
 
+  setChapterAnalysisPresetSelection: (presetId?: string) =>
+    api.put<unknown, { message: string; chapter_analysis_preset_id?: string; preset_name?: string }>('/settings/presets/usage/chapter-analysis', {
+      preset_id: presetId || null,
+    }),
+
   createPresetFromCurrent: (name: string, description?: string) =>
     api.post<unknown, APIKeyPreset>('/settings/presets/from-current', null, {
       params: { name, description }
     }),
+
+  getSystemSMTPSettings: () =>
+    api.get<unknown, import('../types').SystemSMTPSettings>('/settings/system/smtp'),
+
+  updateSystemSMTPSettings: (data: import('../types').SystemSMTPSettingsUpdate) =>
+    api.put<unknown, import('../types').SystemSMTPSettings>('/settings/system/smtp', data),
+
+  testSystemSMTPSettings: (data: { to_email: string }) =>
+    api.post<unknown, { success: boolean; message: string }>('/settings/system/smtp/test', data),
 };
 
 export const projectApi = {
@@ -283,6 +359,43 @@ export const projectApi = {
     api.put<unknown, Project>(`/projects/${id}`, data),
 
   deleteProject: (id: string) => api.delete(`/projects/${id}`),
+
+  generateCover: (id: string, overwrite: boolean = true) =>
+    api.post<unknown, {
+      project_id: string;
+      cover_status: string;
+      cover_image_url?: string;
+      cover_prompt?: string;
+      provider?: string;
+      model?: string;
+      message: string;
+    }>(`/projects/${id}/cover/generate`, { overwrite }),
+
+  downloadCover: async (id: string, filename?: string) => {
+    const response = await axios.get(`/api/projects/${id}/cover/download`, {
+      responseType: 'blob',
+      withCredentials: true,
+    });
+    const contentDisposition = response.headers['content-disposition'];
+    let finalFilename = filename || 'novel-cover.png';
+    if (contentDisposition) {
+      const utf8Match = /filename\*=UTF-8''(.+)/.exec(contentDisposition);
+      const basicMatch = /filename="?([^";]+)"?/.exec(contentDisposition);
+      if (utf8Match?.[1]) {
+        finalFilename = decodeURIComponent(utf8Match[1]);
+      } else if (basicMatch?.[1]) {
+        finalFilename = basicMatch[1];
+      }
+    }
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', finalFilename);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  },
 
   exportProject: (id: string) => {
     window.open(`/api/projects/${id}/export`, '_blank');
@@ -360,6 +473,54 @@ export const projectApi = {
   },
 };
 
+export const bookImportApi = {
+  createTask: (params: BookImportCreateTaskPayload) => {
+    const formData = new FormData();
+    formData.append('file', params.file);
+    const tailChapterCount = params.tail_chapter_count ?? 10;
+    formData.append('extract_mode', params.extract_mode ?? 'tail');
+    formData.append('tail_chapter_count', String(tailChapterCount));
+
+    return api.post<unknown, { task_id: string; status: BookImportTask['status'] }>(
+      '/book-import/tasks',
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    );
+  },
+
+  getTaskStatus: (taskId: string) =>
+    api.get<unknown, BookImportTask>(`/book-import/tasks/${taskId}`),
+
+  getPreview: (taskId: string) =>
+    api.get<unknown, BookImportPreview>(`/book-import/tasks/${taskId}/preview`),
+
+  applyImport: (taskId: string, payload: BookImportApplyPayload) =>
+    api.post<unknown, BookImportResult>(`/book-import/tasks/${taskId}/apply`, payload),
+
+  applyImportStream: (
+    taskId: string,
+    payload: BookImportApplyPayload,
+    options?: SSEClientOptions,
+  ) => ssePost<BookImportResult>(
+    `/api/book-import/tasks/${taskId}/apply-stream`,
+    payload,
+    options,
+  ),
+
+  retryFailedStepsStream: (
+    taskId: string,
+    steps: string[],
+    options?: SSEClientOptions,
+  ) => ssePost<BookImportRetryResult>(
+    `/api/book-import/tasks/${taskId}/retry-stream`,
+    { steps },
+    options,
+  ),
+
+  cancelTask: (taskId: string) =>
+    api.delete<unknown, { success: boolean; message: string }>(`/book-import/tasks/${taskId}`),
+};
+
 export const outlineApi = {
   getOutlines: (projectId: string) =>
     api.get<unknown, { total: number; items: Outline[] }>(`/outlines/project/${projectId}`).then(res => res.items),
@@ -373,40 +534,64 @@ export const outlineApi = {
 
   deleteOutline: (id: string) => api.delete(`/outlines/${id}`),
 
+  exportOutlines: async (projectId: string, outlineIds?: string[]) => {
+    const response = await axios.post(
+      '/api/outlines/export',
+      { project_id: projectId, outline_ids: outlineIds },
+      { responseType: 'blob', withCredentials: true },
+    );
+
+    const contentDisposition = response.headers['content-disposition'] as string | undefined;
+    let filename = 'outlines_export.json';
+    if (contentDisposition) {
+      const encodedMatch = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition);
+      const plainMatch = /filename="?([^";]+)"?/i.exec(contentDisposition);
+      if (encodedMatch?.[1]) {
+        try {
+          filename = decodeURIComponent(encodedMatch[1]);
+        } catch {
+          filename = encodedMatch[1];
+        }
+      } else if (plainMatch?.[1]) {
+        filename = plainMatch[1].trim();
+      }
+    }
+
+    const url = window.URL.createObjectURL(response.data as Blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
+  previewImport: (projectId: string, mode: OutlineImportMode, file: File) => {
+    const formData = new FormData();
+    formData.append('project_id', projectId);
+    formData.append('mode', mode);
+    formData.append('file', file);
+    return api.post<unknown, OutlineImportPreview>('/outlines/import/preview', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+
+  importOutlines: (projectId: string, mode: OutlineImportMode, file: File) => {
+    const formData = new FormData();
+    formData.append('project_id', projectId);
+    formData.append('mode', mode);
+    formData.append('file', file);
+    return api.post<unknown, OutlineImportResult>('/outlines/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+
   reorderOutlines: (data: OutlineReorderRequest) =>
     api.post<unknown, { message: string; updated_outlines: number; updated_chapters: number }>('/outlines/reorder', data),
 
   generateOutline: (data: GenerateOutlineRequest) =>
     api.post<unknown, { total: number; items: Outline[] }>('/outlines/generate', data).then(res => res.items),
-
-  // 预测续写所需角色
-  predictCharacters: (data: {
-    project_id: string;
-    start_chapter: number;
-    chapter_count: number;
-    plot_stage: string;
-    story_direction?: string;
-    enable_mcp: boolean;
-  }) =>
-    api.post<unknown, {
-      needs_new_characters: boolean;
-      reason: string;
-      character_count: number;
-      predicted_characters: Array<{
-        name: string | null;
-        role_description: string;
-        suggested_role_type: string;
-        importance: string;
-        appearance_chapter: number;
-        key_abilities: string[];
-        plot_function: string;
-        relationship_suggestions: Array<{
-          target_character_name: string;
-          relationship_type: string;
-          description?: string;
-        }>;
-      }>;
-    }>('/outlines/predict-characters', data),
 
   // 获取大纲关联的章节
   getOutlineChapters: (outlineId: string) =>
@@ -596,6 +781,16 @@ export const chapterApi = {
   checkCanGenerate: (chapterId: string) =>
     api.get<unknown, import('../types').ChapterCanGenerateResponse>(`/chapters/${chapterId}/can-generate`),
 
+  getBatchAnalysisStatuses: (projectId: string, chapterIds?: string[]) =>
+    api.post<unknown, BatchAnalysisStatusResponse>(`/chapters/project/${projectId}/analysis/statuses`, {
+      chapter_ids: chapterIds && chapterIds.length > 0 ? chapterIds : undefined,
+    }),
+
+  batchAnalyzeUnanalyzed: (projectId: string, data?: BatchAnalyzeUnanalyzedRequest) =>
+    api.post<unknown, BatchAnalyzeUnanalyzedResponse>(`/chapters/project/${projectId}/analysis/analyze-unanalyzed`, {
+      chapter_ids: data?.chapter_ids && data.chapter_ids.length > 0 ? data.chapter_ids : undefined,
+    }),
+
   // 章节重新生成相关
   getRegenerationTasks: (chapterId: string, limit?: number) =>
     api.get<unknown, {
@@ -612,6 +807,45 @@ export const chapterApi = {
         completed_at: string | null;
       }>;
     }>(`/chapters/${chapterId}/regeneration/tasks`, { params: { limit } }),
+
+  // 局部重写相关
+  partialRegenerateStream: (
+    chapterId: string,
+    data: {
+      selected_text: string;
+      start_position: number;
+      end_position: number;
+      user_instructions: string;
+      context_chars?: number;
+      style_id?: number;
+      length_mode?: 'similar' | 'expand' | 'condense' | 'custom';
+      target_word_count?: number;
+    },
+    options?: SSEClientOptions
+  ) => ssePost<{
+    new_text: string;
+    word_count: number;
+    original_word_count: number;
+    start_position: number;
+    end_position: number;
+  }>(
+    `/api/chapters/${chapterId}/partial-regenerate-stream`,
+    data,
+    options
+  ),
+
+  applyPartialRegenerate: (chapterId: string, data: {
+    new_text: string;
+    start_position: number;
+    end_position: number;
+  }) =>
+    api.post<unknown, {
+      success: boolean;
+      chapter_id: string;
+      word_count: number;
+      old_word_count: number;
+      message: string;
+    }>(`/chapters/${chapterId}/apply-partial-regenerate`, data),
 };
 
 export const writingStyleApi = {
@@ -646,6 +880,136 @@ export const writingStyleApi = {
   // 为项目初始化默认风格（如果没有任何风格）
   initializeDefaultStyles: (projectId: string) =>
     api.post<unknown, WritingStyleListResponse>(`/writing-styles/project/${projectId}/initialize`, {}),
+};
+
+export const promptWorkshopApi = {
+  // 检查服务状态
+  getStatus: () =>
+    api.get<unknown, { mode: string; instance_id: string; cloud_url?: string; cloud_connected?: boolean }>('/prompt-workshop/status'),
+
+  // 获取工坊提示词列表
+  getItems: (params?: {
+    category?: string;
+    search?: string;
+    tags?: string;
+    sort?: 'newest' | 'popular' | 'downloads';
+    page?: number;
+    limit?: number;
+  }) => api.get<unknown, PromptWorkshopListResponse>('/prompt-workshop/items', { params }),
+
+  // 获取单个提示词
+  getItem: (itemId: string) =>
+    api.get<unknown, { success: boolean; data: PromptWorkshopItem }>(`/prompt-workshop/items/${itemId}`),
+
+  // 导入到本地
+  importItem: (itemId: string, customName?: string) =>
+    api.post<unknown, { success: boolean; message: string; writing_style: WritingStyle }>(
+      `/prompt-workshop/items/${itemId}/import`,
+      { custom_name: customName }
+    ),
+
+  // 点赞
+  toggleLike: (itemId: string) =>
+    api.post<unknown, { success: boolean; liked: boolean; like_count: number }>(
+      `/prompt-workshop/items/${itemId}/like`
+    ),
+
+  // 提交提示词
+  submit: (data: PromptSubmissionCreate) =>
+    api.post<unknown, { success: boolean; message: string; submission: PromptSubmission }>('/prompt-workshop/submit', data),
+
+  // 我的提交
+  getMySubmissions: (status?: string) =>
+    api.get<unknown, { success: boolean; data: { total: number; items: PromptSubmission[] } }>(
+      '/prompt-workshop/my-submissions',
+      { params: { status } }
+    ),
+
+  // 撤回提交（pending状态）
+  withdrawSubmission: (submissionId: string) =>
+    api.delete<unknown, { success: boolean; message: string }>(`/prompt-workshop/submissions/${submissionId}`),
+
+  // 删除提交记录（所有状态，需要 force=true）
+  deleteSubmission: (submissionId: string) =>
+    api.delete<unknown, { success: boolean; message: string }>(`/prompt-workshop/submissions/${submissionId}`, {
+      params: { force: true }
+    }),
+
+  // ========== 管理员 API（仅服务端模式可用） ==========
+  
+  // 获取待审核列表
+  adminGetSubmissions: (params?: { status?: string; source?: string; page?: number; limit?: number }) =>
+    api.get<unknown, {
+      success: boolean;
+      data: {
+        total: number;
+        pending_count: number;
+        page: number;
+        limit: number;
+        items: PromptSubmission[];
+      };
+    }>('/prompt-workshop/admin/submissions', { params }),
+
+  // 审核提交
+  adminReviewSubmission: (submissionId: string, data: { action: 'approve' | 'reject'; review_note?: string; category?: string; tags?: string[] }) =>
+    api.post<unknown, { success: boolean; message: string; workshop_item?: PromptWorkshopItem; submission?: PromptSubmission }>(
+      `/prompt-workshop/admin/submissions/${submissionId}/review`,
+      data
+    ),
+
+  // 添加官方提示词
+  adminCreateItem: (data: { name: string; description?: string; prompt_content: string; category: string; tags?: string[] }) =>
+    api.post<unknown, { success: boolean; item: PromptWorkshopItem }>('/prompt-workshop/admin/items', data),
+
+  // 编辑提示词
+  adminUpdateItem: (itemId: string, data: { name?: string; description?: string; prompt_content?: string; category?: string; tags?: string[]; status?: string }) =>
+    api.put<unknown, { success: boolean; item: PromptWorkshopItem }>(`/prompt-workshop/admin/items/${itemId}`, data),
+
+  // 删除提示词
+  adminDeleteItem: (itemId: string) =>
+    api.delete<unknown, { success: boolean; message: string }>(`/prompt-workshop/admin/items/${itemId}`),
+
+  // 获取统计数据
+  adminGetStats: () =>
+    api.get<unknown, {
+      success: boolean;
+      data: {
+        total_items: number;
+        total_official: number;
+        total_pending: number;
+        total_downloads: number;
+        total_likes: number;
+      };
+    }>('/prompt-workshop/admin/stats'),
+};
+
+export const announcementApi = {
+  getStatus: () =>
+    api.get<unknown, AnnouncementStatusResponse>('/announcements/status'),
+
+  list: (params?: { page?: number; limit?: number }) =>
+    api.get<unknown, AnnouncementListResponse>('/announcements', { params }),
+
+  sync: (params?: { since?: string; limit?: number }) =>
+    api.get<unknown, AnnouncementListResponse>('/announcements/sync', { params }),
+
+  adminList: (params?: { status?: string; q?: string; page?: number; limit?: number; include_expired?: boolean }) =>
+    api.get<unknown, AnnouncementListResponse>('/announcements/admin/items', { params }),
+
+  adminCreate: (data: AnnouncementCreate) =>
+    api.post<unknown, { success: boolean; item: Announcement }>('/announcements/admin/items', data),
+
+  adminUpdate: (id: string, data: AnnouncementUpdate) =>
+    api.put<unknown, { success: boolean; item: Announcement }>(`/announcements/admin/items/${id}`, data),
+
+  adminDelete: (id: string) =>
+    api.delete<unknown, { success: boolean; message: string }>(`/announcements/admin/items/${id}`),
+
+  adminPublish: (id: string) =>
+    api.post<unknown, { success: boolean; item: Announcement }>(`/announcements/admin/items/${id}/publish`),
+
+  adminHide: (id: string) =>
+    api.post<unknown, { success: boolean; item: Announcement }>(`/announcements/admin/items/${id}/hide`),
 };
 
 export const polishApi = {
@@ -1001,4 +1365,109 @@ export const foreshadowApi = {
       `/foreshadows/projects/${projectId}/sync-from-analysis`,
       data
     ),
+};
+
+export interface ProjectAgentStreamCallbacks {
+  onConversation?: (data: { conversation_id: string; title: string }) => void;
+  onChunk?: (content: string) => void;
+  onToolProposed?: (toolCall: AgentToolCall) => void;
+  onToolExecuted?: (data: {
+    tool_call: AgentToolCall;
+    resources: string[];
+    approval_mode: 'automatic' | 'manual';
+  }) => void;
+  onStepStart?: (step: AgentExecutionStep) => void;
+  onStepUpdate?: (step: AgentExecutionStep) => void;
+  onFinalStart?: (data: { message_id: string }) => void;
+  onFinalChunk?: (content: string) => void;
+  onFinalDone?: (data: { message_id: string }) => void;
+  onResult?: (data: { conversation_id: string; message_id: string; status: string }) => void;
+  onError?: (error: string) => void;
+}
+
+export const projectAgentApi = {
+  listConversations: (projectId: string) =>
+    api.get<unknown, AgentConversation[]>(`/projects/${projectId}/agent/conversations`),
+
+  createConversation: (projectId: string, title?: string) =>
+    api.post<unknown, AgentConversation>(`/projects/${projectId}/agent/conversations`, { title }),
+
+  getConversation: (projectId: string, conversationId: string) =>
+    api.get<unknown, AgentConversationDetail>(
+      `/projects/${projectId}/agent/conversations/${conversationId}`
+    ),
+
+  deleteConversation: (projectId: string, conversationId: string) =>
+    api.delete(`/projects/${projectId}/agent/conversations/${conversationId}`),
+
+  confirmToolCall: (projectId: string, toolCallId: string) =>
+    api.post<unknown, AgentToolDecision>(
+      `/projects/${projectId}/agent/tool-calls/${toolCallId}/confirm`
+    ),
+
+  rejectToolCall: (projectId: string, toolCallId: string) =>
+    api.post<unknown, AgentToolDecision>(
+      `/projects/${projectId}/agent/tool-calls/${toolCallId}/reject`
+    ),
+
+  chatStream: async (
+    projectId: string,
+    payload: {
+      conversation_id?: string;
+      message: string;
+      page_context?: Record<string, unknown>;
+      auto_approve?: boolean;
+    },
+    callbacks: ProjectAgentStreamCallbacks,
+    signal?: AbortSignal,
+  ) => {
+    const response = await fetch(`/api/projects/${projectId}/agent/chat-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+      signal,
+    });
+    if (!response.ok) {
+      let detail = `请求失败 (${response.status})`;
+      try {
+        const body = await response.json();
+        detail = body.detail || detail;
+      } catch {
+        // 保留 HTTP 状态错误。
+      }
+      throw new Error(detail);
+    }
+    if (!response.body) throw new Error('无法读取木木创作助手响应流');
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() || '';
+      for (const block of blocks) {
+        const match = block.match(/^data:\s*(.+)$/m);
+        if (!match) continue;
+        const event = JSON.parse(match[1]);
+        if (event.type === 'conversation') callbacks.onConversation?.(event.data);
+        else if (event.type === 'chunk') callbacks.onChunk?.(event.content || '');
+        else if (event.type === 'tool_proposed') callbacks.onToolProposed?.(event.data);
+        else if (event.type === 'tool_executed') callbacks.onToolExecuted?.(event.data);
+        else if (event.type === 'step_start') callbacks.onStepStart?.(event.data);
+        else if (event.type === 'step_update') callbacks.onStepUpdate?.(event.data);
+        else if (event.type === 'final_start') callbacks.onFinalStart?.(event.data);
+        else if (event.type === 'final_chunk') callbacks.onFinalChunk?.(event.content || '');
+        else if (event.type === 'final_done') callbacks.onFinalDone?.(event.data);
+        else if (event.type === 'result') callbacks.onResult?.(event.data);
+        else if (event.type === 'error') {
+          callbacks.onError?.(event.error || '木木创作助手执行失败');
+          throw new Error(event.error || '木木创作助手执行失败');
+        }
+      }
+    }
+  },
 };

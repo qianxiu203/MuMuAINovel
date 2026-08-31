@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Spin, Alert, Button, Space, Switch, Drawer, message, Progress } from 'antd';
+import { Card, Spin, Alert, Button, Space, Switch, Drawer, message, Progress, theme } from 'antd';
 import {
   ArrowLeftOutlined,
   EyeOutlined,
@@ -56,6 +56,14 @@ interface NavigationData {
   } | null;
 }
 
+interface AnalysisTaskStatus {
+  status: 'none' | 'pending' | 'running' | 'completed' | 'failed';
+  progress: number;
+  error_message?: string | null;
+}
+
+const ANALYSIS_POLL_TIMEOUT_MS = 11 * 60 * 1000;
+
 /**
  * 章节阅读器页面
  * 展示带有记忆标注的章节内容
@@ -63,6 +71,8 @@ interface NavigationData {
 const ChapterReader: React.FC = () => {
   const { chapterId } = useParams<{ chapterId: string }>();
   const navigate = useNavigate();
+
+  const { token } = theme.useToken();
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +84,8 @@ const ChapterReader: React.FC = () => {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [navigation, setNavigation] = useState<NavigationData | null>(null);
+  const analysisPollTimerRef = useRef<number | null>(null);
+  const analysisRunIdRef = useRef(0);
 
   const loadChapterData = useCallback(async () => {
     try {
@@ -139,6 +151,16 @@ const ChapterReader: React.FC = () => {
     }
   }, [chapterId, loadChapterData]);
 
+  useEffect(() => {
+    return () => {
+      analysisRunIdRef.current += 1;
+      if (analysisPollTimerRef.current !== null) {
+        window.clearTimeout(analysisPollTimerRef.current);
+        analysisPollTimerRef.current = null;
+      }
+    };
+  }, [chapterId]);
+
   const handleAnnotationClick = (annotation: MemoryAnnotation) => {
     setActiveAnnotationId(annotation.id);
     // 移动端显示侧边栏
@@ -166,54 +188,77 @@ const ChapterReader: React.FC = () => {
   const handleReanalyze = async () => {
     if (!chapterId) return;
 
+    const requestedChapterId = chapterId;
+    const runId = analysisRunIdRef.current + 1;
+    analysisRunIdRef.current = runId;
+    const deadline = Date.now() + ANALYSIS_POLL_TIMEOUT_MS;
+
+    if (analysisPollTimerRef.current !== null) {
+      window.clearTimeout(analysisPollTimerRef.current);
+      analysisPollTimerRef.current = null;
+    }
+
     try {
       setAnalyzing(true);
       setAnalysisProgress(0);
       message.loading({ content: '开始分析章节...', key: 'analyze', duration: 0 });
 
       // 触发分析
-      await api.post(`/chapters/${chapterId}/analyze`);
+      await api.post(`/chapters/${requestedChapterId}/analyze`);
 
-      // 轮询分析状态
-      const pollInterval = setInterval(async () => {
+      const pollStatus = async (): Promise<void> => {
+        if (analysisRunIdRef.current !== runId) return;
+
+        if (Date.now() >= deadline) {
+          setAnalyzing(false);
+          message.warning({ content: '分析超时，请稍后刷新查看结果', key: 'analyze' });
+          return;
+        }
+
         try {
-          const statusRes = await api.get(`/chapters/${chapterId}/analysis/status`);
-          const { status, progress, error_message } = statusRes.data;
+          const statusRes = await api.get<unknown, AnalysisTaskStatus>(
+            `/chapters/${requestedChapterId}/analysis/status`
+          );
+          if (analysisRunIdRef.current !== runId) return;
+
+          const { status, progress, error_message } = statusRes;
 
           setAnalysisProgress(progress || 0);
 
           if (status === 'completed') {
-            clearInterval(pollInterval);
             setAnalyzing(false);
             message.success({ content: '分析完成！', key: 'analyze' });
-            
-            // 重新加载标注数据
-            const annotationsRes = await api.get(`/chapters/${chapterId}/annotations`);
-            setAnnotationsData(annotationsRes.data);
+            const annotationsRes = await api.get<unknown, AnnotationsData>(
+              `/chapters/${requestedChapterId}/annotations`
+            );
+            if (analysisRunIdRef.current === runId) {
+              setAnnotationsData(annotationsRes);
+            }
+            return;
           } else if (status === 'failed') {
-            clearInterval(pollInterval);
             setAnalyzing(false);
             message.error({
               content: `分析失败：${error_message || '未知错误'}`,
               key: 'analyze'
             });
+            return;
           }
         } catch (err) {
           console.error('轮询分析状态失败:', err);
         }
-      }, 2000); // 每2秒轮询一次
 
-      // 30秒超时
-      setTimeout(() => {
-        clearInterval(pollInterval);
-        if (analyzing) {
-          setAnalyzing(false);
-          message.warning({ content: '分析超时，请稍后刷新查看结果', key: 'analyze' });
+        if (analysisRunIdRef.current === runId) {
+          analysisPollTimerRef.current = window.setTimeout(() => {
+            void pollStatus();
+          }, 2000);
         }
-      }, 30000);
+      };
 
+      void pollStatus();
     } catch (err: unknown) {
-      setAnalyzing(false);
+      if (analysisRunIdRef.current === runId) {
+        setAnalyzing(false);
+      }
       const error = err as { response?: { data?: { detail?: string } } };
       message.error({
         content: error.response?.data?.detail || '触发分析失败',
@@ -303,7 +348,7 @@ const ChapterReader: React.FC = () => {
                   checkedChildren={<EyeOutlined />}
                   unCheckedChildren={<EyeInvisibleOutlined />}
                 />
-                <span style={{ fontSize: 13, color: '#666' }}>显示标注</span>
+                <span style={{ fontSize: 13, color: token.colorTextSecondary }}>显示标注</span>
                 <Button
                   icon={<MenuOutlined />}
                   onClick={() => setSidebarVisible(true)}
@@ -319,14 +364,14 @@ const ChapterReader: React.FC = () => {
         {analyzing && (
           <div style={{ marginTop: 12 }}>
             <Progress percent={analysisProgress} size="small" status="active" />
-            <span style={{ fontSize: 12, color: '#666', marginLeft: 8 }}>
+            <span style={{ fontSize: 12, color: token.colorTextSecondary, marginLeft: 8 }}>
               正在分析章节...
             </span>
           </div>
         )}
 
         {!analyzing && hasAnnotations && annotationsData && (
-          <div style={{ marginTop: 12, fontSize: 12, color: '#999' }}>
+          <div style={{ marginTop: 12, fontSize: 12, color: token.colorTextTertiary }}>
             共有 {annotationsData.summary.total_annotations} 个标注：
             {annotationsData.summary.hooks > 0 && ` 🎣${annotationsData.summary.hooks}个钩子`}
             {annotationsData.summary.foreshadows > 0 &&
@@ -383,7 +428,7 @@ const ChapterReader: React.FC = () => {
               )}
 
               {/* 底部翻页按钮 */}
-              <div style={{ marginTop: 48, paddingTop: 24, borderTop: '1px solid #f0f0f0' }}>
+              <div style={{ marginTop: 48, paddingTop: 24, borderTop: `1px solid ${token.colorBorderSecondary}` }}>
                 <Space style={{ width: '100%', justifyContent: 'space-between' }}>
                   <Button
                     size="large"
@@ -418,9 +463,9 @@ const ChapterReader: React.FC = () => {
           <div
             style={{
               width: 400,
-              borderLeft: '1px solid #f0f0f0',
+              borderLeft: `1px solid ${token.colorBorderSecondary}`,
               overflowY: 'auto',
-              background: '#fafafa',
+              background: token.colorBgLayout,
             }}
           >
             <MemorySidebar

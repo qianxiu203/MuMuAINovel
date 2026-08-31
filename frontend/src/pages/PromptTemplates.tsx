@@ -15,7 +15,8 @@ import {
   Alert,
   Upload,
   Spin,
-  Empty
+  Empty,
+  theme
 } from 'antd';
 import {
   EditOutlined,
@@ -27,14 +28,13 @@ import {
   InfoCircleOutlined
 } from '@ant-design/icons';
 import axios from 'axios';
-import { cardStyles, cardHoverHandlers, gridConfig } from '../components/CardStyles';
+import { promptTemplateCardStyles, promptTemplateCardHoverHandlers, promptTemplateGridConfig } from '../components/CardStyles';
 
 const { TextArea } = Input;
 const { Title, Text, Paragraph } = Typography;
 
 interface PromptTemplate {
   id: string;
-  user_id: string;
   template_key: string;
   template_name: string;
   template_content: string;
@@ -54,6 +54,7 @@ interface CategoryGroup {
 }
 
 export default function PromptTemplates() {
+  const { token } = theme.useToken();
   const [modal, contextHolder] = Modal.useModal();
   const [categories, setCategories] = useState<CategoryGroup[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('0');
@@ -102,6 +103,7 @@ export default function PromptTemplates() {
 
     try {
       setLoading(true);
+      const createsAccountCopy = editingTemplate.is_system_default;
       await axios.post('/api/prompt-templates', {
         template_key: editingTemplate.template_key,
         template_name: editingTemplate.template_name,
@@ -111,7 +113,7 @@ export default function PromptTemplates() {
         parameters: editingTemplate.parameters,
         is_active: editingTemplate.is_active
       });
-      message.success('保存成功');
+      message.success(createsAccountCopy ? '已保存为当前账户的自定义副本' : '保存成功');
       setEditorVisible(false);
       loadTemplates();
     } catch (error: unknown) {
@@ -126,7 +128,7 @@ export default function PromptTemplates() {
   const handleReset = async (templateKey: string) => {
     modal.confirm({
       title: '确认重置',
-      content: '确定要重置为系统默认模板吗？这将覆盖您的自定义内容。',
+      content: '确定要删除当前账户的自定义副本并恢复系统默认吗？这不会影响其他账户。',
       okText: '确定',
       cancelText: '取消',
       centered: true,
@@ -246,13 +248,15 @@ export default function PromptTemplates() {
   };
 
   const currentTemplates = getCurrentTemplates();
+  const pageBackground = `linear-gradient(180deg, ${token.colorBgLayout} 0%, ${token.colorFillSecondary} 100%)`;
+  const headerBackground = `linear-gradient(135deg, ${token.colorPrimary} 0%, ${token.colorPrimaryHover} 100%)`;
 
   return (
     <>
       {contextHolder}
       <div style={{
       minHeight: '90vh',
-      background: 'linear-gradient(180deg, var(--color-bg-base) 0%, #EEF2F3 100%)',
+      background: pageBackground,
       padding: isMobile ? '20px 16px 70px' : '24px 24px 70px',
       display: 'flex',
       flexDirection: 'column',
@@ -269,9 +273,9 @@ export default function PromptTemplates() {
         <Card
           variant="borderless"
           style={{
-            background: 'linear-gradient(135deg, var(--color-primary) 0%, #5A9BA5 50%, var(--color-primary-hover) 100%)',
+            background: headerBackground,
             borderRadius: isMobile ? 16 : 24,
-            boxShadow: '0 12px 40px rgba(77, 128, 136, 0.25), 0 4px 12px rgba(0, 0, 0, 0.06)',
+            boxShadow: token.boxShadowSecondary,
             marginBottom: isMobile ? 20 : 24,
             border: 'none',
             position: 'relative',
@@ -279,19 +283,19 @@ export default function PromptTemplates() {
           }}
         >
           {/* 装饰性背景元素 */}
-          <div style={{ position: 'absolute', top: -60, right: -60, width: 200, height: 200, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.08)', pointerEvents: 'none' }} />
-          <div style={{ position: 'absolute', bottom: -40, left: '30%', width: 120, height: 120, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.05)', pointerEvents: 'none' }} />
-          <div style={{ position: 'absolute', top: '50%', right: '15%', width: 80, height: 80, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.06)', pointerEvents: 'none' }} />
+          <div style={{ position: 'absolute', top: -60, right: -60, width: 200, height: 200, borderRadius: '50%', background: token.colorWhite, opacity: 0.08, pointerEvents: 'none' }} />
+          <div style={{ position: 'absolute', bottom: -40, left: '30%', width: 120, height: 120, borderRadius: '50%', background: token.colorWhite, opacity: 0.05, pointerEvents: 'none' }} />
+          <div style={{ position: 'absolute', top: '50%', right: '15%', width: 80, height: 80, borderRadius: '50%', background: token.colorWhite, opacity: 0.06, pointerEvents: 'none' }} />
 
           <Row align="middle" justify="space-between" gutter={[16, 16]} style={{ position: 'relative', zIndex: 1 }}>
             <Col xs={24} sm={12} md={14}>
               <Space direction="vertical" size={4}>
-                <Title level={isMobile ? 3 : 2} style={{ margin: 0, color: '#fff', textShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
-                  <FileSearchOutlined style={{ color: 'rgba(255,255,255,0.9)', marginRight: 8 }} />
+                <Title level={isMobile ? 3 : 2} style={{ margin: 0, color: token.colorWhite, textShadow: `0 2px 4px ${token.colorBgMask}` }}>
+                  <FileSearchOutlined style={{ color: token.colorWhite, opacity: 0.9, marginRight: 8 }} />
                   提示词模板管理
                 </Title>
-                <Text style={{ fontSize: isMobile ? 12 : 14, color: 'rgba(255,255,255,0.85)', marginLeft: isMobile ? 40 : 48 }}>
-                  自定义AI生成提示词，打造个性化创作体验
+                <Text style={{ fontSize: isMobile ? 12 : 14, color: token.colorTextLightSolid, opacity: 0.85, marginLeft: isMobile ? 40 : 48 }}>
+                  按账户隔离自定义AI生成提示词
                 </Text>
               </Space>
             </Col>
@@ -303,10 +307,11 @@ export default function PromptTemplates() {
                   size={isMobile ? 'small' : 'middle'}
                   style={{
                     borderRadius: 12,
-                    background: 'rgba(255, 255, 255, 0.15)',
-                    border: '1px solid rgba(255, 255, 255, 0.3)',
-                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                    color: '#fff',
+                    background: token.colorWhite,
+                    border: `1px solid ${token.colorWhite}`,
+                    boxShadow: token.boxShadow,
+                    color: token.colorPrimary,
+                    fontWeight: 600,
                     backdropFilter: 'blur(10px)',
                     transition: 'all 0.3s ease'
                   }}
@@ -323,10 +328,11 @@ export default function PromptTemplates() {
                     size={isMobile ? 'small' : 'middle'}
                     style={{
                       borderRadius: 12,
-                      background: 'rgba(255, 255, 255, 0.15)',
-                      border: '1px solid rgba(255, 255, 255, 0.3)',
-                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                      color: '#fff',
+                      background: token.colorWhite,
+                      border: `1px solid ${token.colorWhite}`,
+                      boxShadow: token.boxShadow,
+                      color: token.colorPrimary,
+                      fontWeight: 600,
                       backdropFilter: 'blur(10px)',
                     }}
                   >
@@ -341,17 +347,17 @@ export default function PromptTemplates() {
           <Alert
             message={
               <Space align="center">
-                <InfoCircleOutlined style={{ fontSize: 16, color: 'var(--color-primary)' }} />
+                <InfoCircleOutlined style={{ fontSize: 16, color: token.colorPrimary }} />
                 <Text strong style={{ fontSize: isMobile ? 13 : 14 }}>使用说明</Text>
               </Space>
             }
             description={
               <div>
                 <Text style={{ fontSize: isMobile ? 12 : 13, display: 'block', marginBottom: 8 }}>
-                  • <strong>系统默认模板</strong>（灰色头部）：始终启用，无需手动开关。点击"编辑"后将创建您的自定义副本。
+                  • <strong>系统默认模板</strong>（灰色头部）：始终启用，无需手动开关。点击"编辑"后将创建仅当前账户生效的自定义副本。
                 </Text>
                 <Text style={{ fontSize: isMobile ? 12 : 13, display: 'block' }}>
-                  • <strong>已自定义模板</strong>（紫色头部）：可通过开关控制启用/禁用，使用 <Text code>{'{variable_name}'}</Text> 格式表示变量占位符。点击"重置"可恢复为系统默认。
+                  • <strong>已自定义模板</strong>（紫色头部）：仅当前账户生效，可通过开关控制启用/禁用，使用 <Text code>{'{variable_name}'}</Text> 格式表示变量占位符。点击"重置"可恢复为系统默认。
                 </Text>
               </div>
             }
@@ -360,8 +366,8 @@ export default function PromptTemplates() {
             style={{
               marginTop: isMobile ? 16 : 24,
               borderRadius: 12,
-              background: 'var(--color-info-bg)',
-              border: '1px solid var(--color-info-border)'
+              background: token.colorInfoBg,
+              border: `1px solid ${token.colorInfoBorder}`
             }}
           />
         </Card>
@@ -374,9 +380,9 @@ export default function PromptTemplates() {
               <Card
                 variant="borderless"
                 style={{
-                  background: 'rgba(255, 255, 255, 0.95)',
+                  background: token.colorBgContainer,
                   borderRadius: isMobile ? 12 : 16,
-                  boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
+                  boxShadow: token.boxShadowSecondary,
                   marginBottom: isMobile ? 16 : 24
                 }}
                 styles={{ body: { padding: isMobile ? '12px' : '16px' } }}
@@ -400,9 +406,9 @@ export default function PromptTemplates() {
               <Card
                 variant="borderless"
                 style={{
-                  background: 'rgba(255, 255, 255, 0.95)',
+                  background: token.colorBgContainer,
                   borderRadius: isMobile ? 12 : 16,
-                  boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
+                  boxShadow: token.boxShadowSecondary,
                 }}
               >
                 <Empty
@@ -413,25 +419,25 @@ export default function PromptTemplates() {
             ) : (
               <Row gutter={[16, 16]}>
                 {currentTemplates.map(template => (
-                  <Col {...gridConfig} key={template.id}>
+                  <Col {...promptTemplateGridConfig} key={template.id}>
                     <Card
                       hoverable
                       variant="borderless"
-                      style={cardStyles.project}
+                      style={promptTemplateCardStyles.templateCard}
                       styles={{ body: { padding: 0, overflow: 'hidden' } }}
-                      {...cardHoverHandlers}
+                      {...promptTemplateCardHoverHandlers}
                     >
                       {/* 头部 */}
                       <div style={{
                         background: template.is_system_default
-                          ? 'var(--color-bg-layout)'
-                          : 'var(--color-primary)',
+                          ? token.colorFillTertiary
+                          : token.colorPrimary,
                         padding: isMobile ? '16px' : '20px',
                         position: 'relative'
                       }}>
                         <Space direction="vertical" size={8} style={{ width: '100%' }}>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <Title level={isMobile ? 5 : 4} style={{ margin: 0, color: template.is_system_default ? 'var(--color-text-primary)' : '#fff', flex: 1 }} ellipsis>
+                            <Title level={isMobile ? 5 : 4} style={{ margin: 0, color: template.is_system_default ? token.colorText : token.colorWhite, flex: 1 }} ellipsis>
                               {template.template_name}
                             </Title>
                             {!template.is_system_default && (
@@ -444,10 +450,10 @@ export default function PromptTemplates() {
                             )}
                           </div>
                           <Space wrap>
-                            <Tag color={template.is_system_default ? 'default' : 'rgba(255,255,255,0.3)'} style={{ color: template.is_system_default ? 'var(--color-text-secondary)' : '#fff', border: 'none' }}>
+                            <Tag color={template.is_system_default ? 'default' : 'rgba(255,255,255,0.3)'} style={{ color: template.is_system_default ? token.colorTextSecondary : token.colorWhite, border: 'none' }}>
                               {template.category}
                             </Tag>
-                            <Tag color={template.is_system_default ? 'default' : 'rgba(255,255,255,0.3)'} style={{ color: template.is_system_default ? 'var(--color-text-secondary)' : '#fff', border: 'none' }}>
+                            <Tag color={template.is_system_default ? 'default' : 'rgba(255,255,255,0.3)'} style={{ color: template.is_system_default ? token.colorTextSecondary : token.colorWhite, border: 'none' }}>
                               {template.is_system_default ? '系统默认' : '已自定义'}
                             </Tag>
                           </Space>
